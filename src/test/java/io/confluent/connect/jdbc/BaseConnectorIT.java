@@ -45,14 +45,20 @@ public class BaseConnectorIT {
   protected static final long CONNECTOR_STARTUP_DURATION_MS = TimeUnit.SECONDS.toMillis(300);
   protected static final String CONNECTOR_NAME = "mysql-jdbc-sink";
   protected static final String KAFKA_TOPIC = "mysqlTable";
-
+  protected static final String AUTO_EVOLVE = "true";
   protected static final String MAX_TASKS = "1";
 
   protected static final Schema SCHEMA = SchemaBuilder.struct().name("com.example.Person")
-      .field("userId", Schema.OPTIONAL_INT32_SCHEMA)
-      .field("firstName", Schema.STRING_SCHEMA)
-      .field("lastName", Schema.STRING_SCHEMA)
-      .field("age", Schema.OPTIONAL_INT32_SCHEMA)
+      .field("bankId", Schema.INT32_SCHEMA)
+      .field("bankName", Schema.STRING_SCHEMA)
+      .field("rateOfInterest", Schema.FLOAT32_SCHEMA)
+      .build();
+
+  protected static final Schema SCHEMA_UPDATED = SchemaBuilder.struct().name("com.example.Person")
+      .field("bankId", Schema.INT32_SCHEMA)
+      .field("bankName", Schema.STRING_SCHEMA)
+      .field("rateOfInterest", Schema.FLOAT32_SCHEMA)
+      .field("location", Schema.OPTIONAL_STRING_SCHEMA)
       .build();
 
   protected EmbeddedConnectCluster connect;

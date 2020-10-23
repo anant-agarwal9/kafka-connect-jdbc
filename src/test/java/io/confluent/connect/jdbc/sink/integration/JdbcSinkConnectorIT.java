@@ -48,119 +48,187 @@ import java.util.concurrent.TimeUnit;
 
 @Category(IntegrationTest.class)
 public class JdbcSinkConnectorIT extends BaseConnectorIT {
+    private static final Logger log = LoggerFactory.getLogger(JdbcSinkConnectorIT.class);
+    private Map<String, String> props;
+    private static final int NUM_RECORDS = 50;
+    private static final int NUM_RECORDS_UPDATED = 100;
 
-  private static final Logger log = LoggerFactory.getLogger(JdbcSinkConnectorIT.class);
-  private Map<String, String> props;
-  private static final int NUM_RECORDS = 50;
+    @ClassRule
+    public static MysqlTestContainer mySqlContainer = new MysqlTestContainer();
 
-  @ClassRule
-  public static MysqlTestContainer mySqlContainer = new MysqlTestContainer();
-
-  @Before
-  public void setup() throws Exception {
-    startConnect();
-    connect.kafka().createTopic(KAFKA_TOPIC, 1);
-    props = getSinkConnectorProps();
-    if (connection == null) {
-      TestUtils.waitForCondition(
-          () -> assertDbConnection(mySqlContainer.getMappedPort(3306)).orElse(false),
-          TimeUnit.SECONDS.toMillis(50),
-          "Failed to start the container.");
+    @Before
+    public void setup() throws Exception {
+        startConnect();
+        connect.kafka().createTopic(KAFKA_TOPIC, 1);
+        props = getSinkConnectorProps();
+        if (connection == null) {
+            TestUtils.waitForCondition(
+                () -> assertDbConnection(mySqlContainer.getMappedPort(3306)).orElse(false),
+                TimeUnit.SECONDS.toMillis(50),
+                "Failed to start the container.");
+        }
+        dropTableIfExists(KAFKA_TOPIC);
     }
-    dropTableIfExists(KAFKA_TOPIC);
-  }
 
-  @After
-  public void close() {
-    // delete connector
-    connect.deleteConnector(CONNECTOR_NAME);
-    connect.stop();
-  }
-
-  @AfterClass
-  public static void closeConnection() {
-    mySqlContainer.close();
-  }
-
-  @Test
-  public void testSuccess() throws Exception {
-    sendTestDataToKafka(0, NUM_RECORDS);
-    ConsumerRecords<byte[], byte[]> totalRecords = connect.kafka().consume(
-        NUM_RECORDS,
-        CONSUME_MAX_DURATION_MS,
-        KAFKA_TOPIC);
-    log.info("Number of records added in kafka {}", totalRecords.count());
-
-    // Configure Connector and wait some specific time to start the connector.
-    connect.configureConnector(CONNECTOR_NAME, props);
-    waitForConnectorToStart(CONNECTOR_NAME, Integer.valueOf(MAX_TASKS));
-
-    // Wait Connector to write data into Mysql
-    waitForConnectorToWriteDataIntoMysql(
-        connection,
-        CONNECTOR_NAME,
-        Integer.valueOf(MAX_TASKS),
-        KAFKA_TOPIC,
-        NUM_RECORDS);
-    assertRecordsCountAndContent(NUM_RECORDS);
-  }
-
-  private void assertRecordsCountAndContent(int recordCount) throws SQLException {
-    Statement st = connection.createStatement();
-    ResultSet rs = st.executeQuery("SELECT * FROM " + KAFKA_TOPIC);
-    int counter = 0;
-    while (rs.next()) {
-      Assert.assertEquals(counter++, rs.getInt("userId"));
-      Assert.assertEquals("Alex", rs.getString("firstName"));
-      Assert.assertEquals("Smith", rs.getString("lastName"));
-      Assert.assertEquals(20, rs.getInt("age"));
+    @After
+    public void close() {
+        // delete connector
+        connect.deleteConnector(CONNECTOR_NAME);
+        connect.stop();
     }
-    Assert.assertEquals(counter, recordCount);
-  }
 
-  private void sendTestDataToKafka(int startIndex, int numRecords) throws InterruptedException {
-    for (int i = startIndex; i < startIndex + numRecords; i++) {
-      String value = getTestKafkaRecord(KAFKA_TOPIC, SCHEMA, i);
-      connect.kafka().produce(KAFKA_TOPIC, null, value);
+    @AfterClass
+    public static void closeConnection() {
+        mySqlContainer.close();
     }
-  }
 
-  /**
-   * Create a map of Common connector properties.
-   *
-   * @return : Map of props.
-   */
-  private Map<String, String> getSinkConnectorProps() {
-    Map<String, String> props = new HashMap<>();
-    props.put(SinkConnectorConfig.TOPICS_CONFIG, KAFKA_TOPIC);
-    props.put("connector.class", JdbcSinkConnector.class.getName());
-    props.put("tasks.max", MAX_TASKS);
-    // license properties
-    props.put("confluent.topic.replication.factor", "1");
-    props.put("confluent.topic.bootstrap.servers", connect.kafka().bootstrapServers());
-    // connector-specific properties
-    props.put("connection.url", getConnectionUrl(mySqlContainer.getMappedPort(3306)));
-    props.put("connection.user", "user");
-    props.put("connection.password", "password");
-    props.put("dialect.name", "MySqlDatabaseDialect");
-    props.put("auto.create", "true");
-    props.put("value.converter", JsonConverter.class.getName());
-    return props;
-  }
+    @Test
+    public void testSuccess() throws Exception {
+        sendTestDataToKafka(0, NUM_RECORDS);
+        ConsumerRecords<byte[], byte[]> totalRecords = connect.kafka().consume(
+            NUM_RECORDS,
+            CONSUME_MAX_DURATION_MS,
+            KAFKA_TOPIC);
+        log.info("Number of records added in kafka {}", totalRecords.count());
 
-  private String getTestKafkaRecord(String topic, Schema schema, int i) {
-      final Struct struct = new Struct(schema)
-          .put("userId", i)
-          .put("firstName", "Alex")
-          .put("lastName", "Smith")
-          .put("age", 20);
-      JsonConverter jsonConverter = new JsonConverter();
-      Map<String, String> config = new HashMap<>();
-      config.put(JsonConverterConfig.SCHEMAS_CACHE_SIZE_CONFIG, "100");
-      config.put(ConverterConfig.TYPE_CONFIG, ConverterType.VALUE.getName());
-      config.put(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "true");
-      jsonConverter.configure(config);
-      byte[] raw = jsonConverter.fromConnectData(topic, schema, struct);
-      return new String(raw, StandardCharsets.UTF_8);
+        // Configure Connector and wait some specific time to start the connector.
+        connect.configureConnector(CONNECTOR_NAME, props);
+        waitForConnectorToStart(CONNECTOR_NAME, Integer.valueOf(MAX_TASKS));
+
+        // Wait Connector to write data into Mysql
+        waitForConnectorToWriteDataIntoMysql(
+            connection,
+            CONNECTOR_NAME,
+            Integer.valueOf(MAX_TASKS),
+            KAFKA_TOPIC,
+            NUM_RECORDS);
+        assertRecordsCountAndContent(NUM_RECORDS);
+    }
+
+    @Test
+    public void testSchemaEvolution() throws Exception {
+        sendTestDataToKafka(0, NUM_RECORDS);
+        ConsumerRecords<byte[], byte[]> totalRecords = connect.kafka().consume(
+            NUM_RECORDS,
+            CONSUME_MAX_DURATION_MS,
+            KAFKA_TOPIC);
+        log.info("Number of records added in kafka {}", totalRecords.count());
+        // Configure Connector and wait some specific time to start the connector.
+        connect.configureConnector(CONNECTOR_NAME, props);
+        waitForConnectorToStart(CONNECTOR_NAME, Integer.valueOf(MAX_TASKS));
+        // Wait Connector to write data into Mysql
+        waitForConnectorToWriteDataIntoMysql(
+            connection,
+            CONNECTOR_NAME,
+            Integer.parseInt(MAX_TASKS),
+            KAFKA_TOPIC,
+            NUM_RECORDS);
+        assertRecordsCountAndContent(NUM_RECORDS);
+        log.info("Processed and asserted first set of data.\n");
+        sendTestDataToKafkaWithUpdatedSchema(NUM_RECORDS, NUM_RECORDS_UPDATED);
+        totalRecords = connect.kafka().consume(
+            NUM_RECORDS + NUM_RECORDS_UPDATED,
+            CONSUME_MAX_DURATION_MS,
+            KAFKA_TOPIC);
+        log.info("Number of records added in kafka after adding few more records: {}", totalRecords.count());
+        // Wait Connector to write data into Mysql
+        waitForConnectorToWriteDataIntoMysql(
+            connection,
+            CONNECTOR_NAME,
+            Integer.parseInt(MAX_TASKS),
+            KAFKA_TOPIC,
+            NUM_RECORDS + NUM_RECORDS_UPDATED);
+        assertRecordsCountAndContentWithUpdatedSchema(NUM_RECORDS, NUM_RECORDS_UPDATED);
+        log.info("Processed and asserted the updated set of data. \n");
+    }
+
+    private void assertRecordsCountAndContent(int recordCount) throws SQLException {
+        Statement st = connection.createStatement();
+        ResultSet rs = st.executeQuery("SELECT * FROM " + KAFKA_TOPIC);
+        int counter = 0;
+        while (rs.next()) {
+            Assert.assertEquals(counter++, rs.getInt("bankId"));
+            Assert.assertEquals("ICICI", rs.getString("bankName"));
+            Assert.assertEquals(8.45f, rs.getFloat("rateOfInterest"), 0.01);
+        }
+        Assert.assertEquals(counter, recordCount);
+    }
+
+    private void assertRecordsCountAndContentWithUpdatedSchema(int recordCount, int recordCountUpdated) throws SQLException {
+        Statement st = connection.createStatement();
+        ResultSet rs = st.executeQuery("SELECT * FROM " + KAFKA_TOPIC);
+        int counter = 0;
+        while (rs.next()) {
+            Assert.assertEquals(counter++, rs.getInt("bankId"));
+            Assert.assertEquals("ICICI", rs.getString("bankName"));
+            Assert.assertEquals(8.45f, rs.getFloat("rateOfInterest"), 0.01);
+            if(counter > recordCount) {
+                Assert.assertEquals("Mumbai", rs.getString("location"));
+            }
+        }
+        Assert.assertEquals(recordCount + recordCountUpdated, counter);
+    }
+
+    private void sendTestDataToKafka(int startIndex, int numRecords) throws InterruptedException {
+        for (int i = startIndex; i < startIndex + numRecords; i++) {
+            String value = getTestKafkaRecord(KAFKA_TOPIC, SCHEMA, i);
+            connect.kafka().produce(KAFKA_TOPIC, null, value);
+        }
+    }
+    private void sendTestDataToKafkaWithUpdatedSchema(int startIndex, int numRecords) throws InterruptedException {
+        for (int i = startIndex; i < startIndex + numRecords; i++) {
+            String value = getTestKafkaRecordWithUpdatedSchema(KAFKA_TOPIC, SCHEMA_UPDATED, i);
+            connect.kafka().produce(KAFKA_TOPIC, null, value);
+        }
+    }
+
+    private Map<String, String> getSinkConnectorProps() {
+        Map<String, String> props = new HashMap<>();
+        props.put(SinkConnectorConfig.TOPICS_CONFIG, KAFKA_TOPIC);
+        props.put("connector.class", JdbcSinkConnector.class.getName());
+        props.put("tasks.max", MAX_TASKS);
+        // license properties
+        props.put("confluent.topic.replication.factor", "1");
+        props.put("confluent.topic.bootstrap.servers", connect.kafka().bootstrapServers());
+        // connector-specific properties
+        props.put("connection.url", getConnectionUrl(mySqlContainer.getMappedPort(3306)));
+        props.put("connection.user", "user");
+        props.put("connection.password", "password");
+        props.put("dialect.name", "MySqlDatabaseDialect");
+        props.put("auto.create", "true");
+        props.put("auto.evolve", AUTO_EVOLVE);
+        props.put("value.converter", JsonConverter.class.getName());
+        return props;
+    }
+
+    private String getTestKafkaRecord(String topic, Schema schema, int i) {
+        final Struct struct = new Struct(schema)
+            .put("bankId", i)
+            .put("bankName", "ICICI")
+            .put("rateOfInterest", 8.45f);
+        JsonConverter jsonConverter = new JsonConverter();
+        Map<String, String> config = new HashMap<>();
+        config.put(JsonConverterConfig.SCHEMAS_CACHE_SIZE_CONFIG, "100");
+        config.put(ConverterConfig.TYPE_CONFIG, ConverterType.VALUE.getName());
+        config.put(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "true");
+        jsonConverter.configure(config);
+        byte[] raw = jsonConverter.fromConnectData(topic, schema, struct);
+        return new String(raw, StandardCharsets.UTF_8);
+    }
+
+    private String getTestKafkaRecordWithUpdatedSchema(String topic, Schema schema, int i) {
+        final Struct struct = new Struct(schema)
+            .put("bankId", i)
+            .put("bankName", "ICICI")
+            .put("rateOfInterest", 8.45f)
+            .put("location", "Mumbai");
+        JsonConverter jsonConverter = new JsonConverter();
+        Map<String, String> config = new HashMap<>();
+        config.put(JsonConverterConfig.SCHEMAS_CACHE_SIZE_CONFIG, "100");
+        config.put(ConverterConfig.TYPE_CONFIG, ConverterType.VALUE.getName());
+        config.put(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "true");
+        jsonConverter.configure(config);
+        byte[] raw = jsonConverter.fromConnectData(topic, schema, struct);
+        return new String(raw, StandardCharsets.UTF_8);
     }
 }
